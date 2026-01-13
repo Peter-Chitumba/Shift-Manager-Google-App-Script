@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <style>
+    /* Styles from original prompt, potentially slightly adjusted */
+    * { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif; box-sizing: border-box; }
+    body { padding: 20px; background-color: #f5f7fa; }
+    .editor-container { background: white; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); padding: 24px; max-width: 600px; margin: 0 auto; }
+    h2 { color: #1a1a1a; font-weight: 600; margin-bottom: 24px; text-align: center; }
+    .form-group { margin-bottom: 18px; }
+    label { display: block; margin-bottom: 6px; font-weight: 500; color: #334155; font-size: 0.9em;}
+    select, input { width: 100%; padding: 9px 12px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 14px; background-color: #fff; }
+    select:focus, input:focus { outline: none; border-color: #2563eb; box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.2); }
+    button { background-color: #2563eb; color: white; padding: 10px 20px; border: none; border-radius: 6px; cursor: pointer; font-weight: 500; width: 100%; font-size: 14px; transition: background-color 0.2s; margin-top: 10px;}
+    button:hover { background-color: #1d4ed8; }
+    button:disabled { background-color: #94a3b8; cursor: not-allowed; }
+    .loading-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(255, 255, 255, 0.7); display: flex; justify-content: center; align-items: center; z-index: 1000; visibility: hidden; opacity: 0; transition: opacity 0.3s; }
+    .loading-overlay.visible { visibility: visible; opacity: 1; }
+    .loader { border: 4px solid #f3f3f3; border-top: 4px solid #3498db; border-radius: 50%; width: 40px; height: 40px; animation: spin 1s linear infinite; }
+    @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    #status { margin-top: 15px; text-align: center; font-size: 0.9em; color: #16a34a; min-height: 1.2em;}
+    #status.error { color: #dc2626; }
+  </style>
+</head>
+<body>
+  <div class="editor-container">
+    <h2>Manual Shift Editor</h2>
+    <form id="shiftForm">
+      <div class="form-group">
+        <label for="week">Week</label>
+        <select id="week" name="week" required>
+          <option value="week1" selected>Week 1</option>
+          <option value="week2">Week 2</option>
+        </select>
+      </div>
+
+      <div class="form-group">
+        <label for="day">Day</label>
+        <select id="day" name="day" required onchange="updateUI()">
+          <!-- Options will be populated by client-side JS -->
+        </select>
+      </div>
+
+      <div class="form-group">
+        <label for="timeSlot">Time Slot</label>
+        <select id="timeSlot" name="timeSlot" required>
+           <option value="" disabled selected>Select day first</option>
+        </select>
+      </div>
+
+      <div class="form-group">
+        <label for="staffPosition">Staff Position</label>
+        <select id="staffPosition" name="staffPosition" required>
+          <option value="staff1">Staff 1</option>
+          <option value="staff2">Staff 2</option>
+        </select>
+      </div>
+
+      <div class="form-group">
+        <label for="staffMember">Assign Staff Member</label>
+        <select id="staffMember" name="staffMember" required>
+          <option value="">--- Select Staff ---</option>
+          <option value="--REMOVE--">-- Remove Assignment --</option>
+          <? if (typeof staffInfo !== 'undefined' && staffInfo && typeof staffInfo === 'object') { ?>
+             <? Object.keys(staffInfo).sort().forEach(function(name) { ?>
+               <option value="<?= name ?>"><?= name ?></option>
+             <? }); ?>
+           <? } else { ?>
+              <option value="" disabled>Staff not loaded</option>
+           <? } ?>
+        </select>
+      </div>
+
+      <button type="button" id="submitButton" onclick="handleSubmit()">Update Shift</button>
+      <div id="status"></div>
+    </form>
+  </div>
+
+  <div id="loadingOverlay" class="loading-overlay">
+     <div class="loader"></div>
+  </div>
+
+  <script>
+    // Simplified and robust data injection.
+    // The server ensures these _DATA variables are actual JS objects/arrays or undefined.
+    // JSON.stringify will handle undefined by outputting the literal 'undefined', 
+    // which we then OR with a default empty array/object.
+    const ALL_DAYS_FROM_SERVER = <?!= JSON.stringify(ALL_DAYS_DATA) ?> || [];
+    const WEEKDAYS_FROM_SERVER = <?!= JSON.stringify(WEEKDAYS_DATA) ?> || [];
+    const WEEKEND_DAYS_FROM_SERVER = <?!= JSON.stringify(WEEKEND_DAYS_DATA) ?> || [];
+    
+    const ALL_WEEKDAY_TIME_SLOTS_FROM_SERVER = <?!= JSON.stringify(WEEKDAY_TIME_SLOTS_DATA) ?> || {};
+    const ALL_WEEKEND_TIME_SLOTS_FROM_SERVER = <?!= JSON.stringify(WEEKEND_TIME_SLOTS_DATA) ?> || {};
+    
+    const SETTINGS_FROM_SERVER = <?!= JSON.stringify(settingsFromServer) ?> || {};
+
+    // Client-side constants derived safely
+    const ALL_DAYS = Array.isArray(ALL_DAYS_FROM_SERVER) ? ALL_DAYS_FROM_SERVER : [];
+    const SERVER_WEEKDAYS = Array.isArray(WEEKDAYS_FROM_SERVER) ? WEEKDAYS_FROM_SERVER : [];
+    const SERVER_WEEKEND_DAYS = Array.isArray(WEEKEND_DAYS_FROM_SERVER) ? WEEKEND_DAYS_FROM_SERVER : [];
+    
+    const SERVER_WEEKDAY_SLOTS_REGULAR = (ALL_WEEKDAY_TIME_SLOTS_FROM_SERVER && Array.isArray(ALL_WEEKDAY_TIME_SLOTS_FROM_SERVER.REGULAR)) 
+                                          ? ALL_WEEKDAY_TIME_SLOTS_FROM_SERVER.REGULAR : [];
+    const SERVER_WEEKDAY_SLOTS_FRI_EVE = (ALL_WEEKDAY_TIME_SLOTS_FROM_SERVER && Array.isArray(ALL_WEEKDAY_TIME_SLOTS_FROM_SERVER.FRIDAY_EVENING)) 
+                                         ? ALL_WEEKDAY_TIME_SLOTS_FROM_SERVER.FRIDAY_EVENING : [];
+    
+    const SERVER_SAT_SLOTS = (ALL_WEEKEND_TIME_SLOTS_FROM_SERVER && Array.isArray(ALL_WEEKEND_TIME_SLOTS_FROM_SERVER.SATURDAY)) 
+                             ? ALL_WEEKEND_TIME_SLOTS_FROM_SERVER.SATURDAY : [];
+    const SERVER_SUN_SLOTS = (ALL_WEEKEND_TIME_SLOTS_FROM_SERVER && Array.isArray(ALL_WEEKEND_TIME_SLOTS_FROM_SERVER.SUNDAY)) 
+                             ? ALL_WEEKEND_TIME_SLOTS_FROM_SERVER.SUNDAY : [];
+    
+    const SETTINGS = (typeof SETTINGS_FROM_SERVER === 'object' && SETTINGS_FROM_SERVER !== null) ? SETTINGS_FROM_SERVER : {};
+
+    function populateDayDropdown() {
+        const daySelect = document.getElementById('day');
+        daySelect.innerHTML = ''; 
+        if (ALL_DAYS.length > 0) {
+            ALL_DAYS.forEach(function(day) {
+                const option = document.createElement('option');
+                option.value = day;
+                option.textContent = day;
+                daySelect.appendChild(option);
+            });
+        } else {
+            const option = document.createElement('option');
+            option.value = "";
+            option.textContent = "Days not available";
+            option.disabled = true;
+            daySelect.appendChild(option);
+        }
+    }
+
+    function updateUI() {
+      const daySelect = document.getElementById('day');
+      const timeSlotSelect = document.getElementById('timeSlot');
+      const selectedDay = daySelect.value;
+      let availableSlots = [];
+
+      if (!selectedDay) { // Handle case where no day is selected yet
+          timeSlotSelect.innerHTML = '<option value="" disabled selected>Select day first</option>';
+          timeSlotSelect.disabled = true;
+          updateStaff2Visibility(); // Ensure staff2 visibility is also updated
+          return;
+      }
+
+      if (SERVER_WEEKDAYS.includes(selectedDay)) {
+        if (selectedDay === 'Friday') {
+            availableSlots = SERVER_WEEKDAY_SLOTS_FRI_EVE; 
+        } else {
+            availableSlots = SERVER_WEEKDAY_SLOTS_REGULAR;
+        }
+      } else if (selectedDay === 'Saturday') {
+        availableSlots = SERVER_SAT_SLOTS;
+      } else if (selectedDay === 'Sunday') {
+        availableSlots = SERVER_SUN_SLOTS;
+      }
+
+      const currentTimeSlotValue = timeSlotSelect.value;
+      timeSlotSelect.innerHTML = ''; 
+      if (availableSlots.length > 0) {
+          availableSlots.forEach(slot => {
+            const option = document.createElement('option');
+            option.value = slot;
+            option.textContent = slot;
+            if (slot === currentTimeSlotValue) { option.selected = true; }
+            timeSlotSelect.appendChild(option);
+          });
+          timeSlotSelect.disabled = false;
+          // If current value is no longer valid, select the first available slot
+          if (!availableSlots.includes(currentTimeSlotValue) && timeSlotSelect.options.length > 0) {
+              timeSlotSelect.value = timeSlotSelect.options[0].value;
+          }
+      } else {
+          const option = document.createElement('option');
+          option.value = "";
+          option.textContent = "No slots for this day";
+          option.disabled = true;
+          option.selected = true;
+          timeSlotSelect.appendChild(option);
+          timeSlotSelect.disabled = true;
+      }
+      
+      updateStaff2Visibility();
+    }
+
+    function updateStaff2Visibility() {
+        const daySelect = document.getElementById('day');
+        const timeSlotSelect = document.getElementById('timeSlot');
+        const staffPosSelect = document.getElementById('staffPosition');
+        const staffPosOption2 = staffPosSelect.options[1]; 
+
+        const selectedDay = daySelect.value;
+        const selectedTime = timeSlotSelect.value;
+        let showStaff2 = false; 
+
+        if (selectedDay && selectedTime && Object.keys(SETTINGS).length > 0) { 
+            if (SERVER_WEEKDAYS.includes(selectedDay)) {
+                if (selectedDay === 'Friday' && selectedTime === '4pm - 8pm') {
+                    showStaff2 = (SETTINGS.REQ_FRI_EVE >= 2);
+                } else { 
+                    showStaff2 = (SETTINGS.REQ_WEEKDAY >= 2);
+                }
+            } else if (selectedDay === 'Saturday') {
+                showStaff2 = (SETTINGS.REQ_SATURDAY >= 2);
+            } else if (selectedDay === 'Sunday') {
+                showStaff2 = (SETTINGS.REQ_SUNDAY >= 2);
+            }
+        }
+        
+        staffPosOption2.style.display = showStaff2 ? '' : 'none';
+        staffPosOption2.disabled = !showStaff2;
+        if (!showStaff2 && staffPosSelect.value === 'staff2') {
+            staffPosSelect.value = 'staff1'; 
+        }
+    }
+
+    document.getElementById('timeSlot').addEventListener('change', updateStaff2Visibility);
+
+    function handleSubmit() {
+      const form = document.getElementById('shiftForm');
+      const button = document.getElementById('submitButton');
+      const statusDiv = document.getElementById('status');
+      const overlay = document.getElementById('loadingOverlay');
+
+      statusDiv.textContent = '';
+      statusDiv.className = '';
+
+      if (!form.checkValidity()) {
+         statusDiv.textContent = 'Please fill in all required fields.';
+         statusDiv.className = 'error';
+         form.reportValidity();
+         return;
+      }
+      if (document.getElementById('staffMember').value === "") {
+           statusDiv.textContent = 'Please select a staff member or "-- Remove Assignment --".';
+           statusDiv.className = 'error';
+           return;
+      }
+      if (document.getElementById('timeSlot').value === "" || document.getElementById('timeSlot').disabled) {
+           statusDiv.textContent = 'Please select a valid time slot.';
+           statusDiv.className = 'error';
+           return;
+      }
+
+      const formData = {
+        week: document.getElementById('week').value,
+        day: document.getElementById('day').value,
+        timeSlot: document.getElementById('timeSlot').value,
+        staffPosition: document.getElementById('staffPosition').value,
+        staffMember: document.getElementById('staffMember').value
+      };
+
+      if (formData.staffPosition === 'staff2') {
+            let staff2AllowedForThisSlot = false;
+            if (Object.keys(SETTINGS).length > 0) {
+                if (SERVER_WEEKDAYS.includes(formData.day)) {
+                    if (formData.day === 'Friday' && formData.timeSlot === '4pm - 8pm') {
+                        staff2AllowedForThisSlot = (SETTINGS.REQ_FRI_EVE >= 2);
+                    } else {
+                        staff2AllowedForThisSlot = (SETTINGS.REQ_WEEKDAY >= 2);
+                    }
+                } else if (formData.day === 'Saturday') {
+                    staff2AllowedForThisSlot = (SETTINGS.REQ_SATURDAY >= 2);
+                } else if (formData.day === 'Sunday') {
+                    staff2AllowedForThisSlot = (SETTINGS.REQ_SUNDAY >= 2);
+                }
+            }
+
+            if (!staff2AllowedForThisSlot) {
+                statusDiv.textContent = 'Cannot assign Staff 2 to this slot based on current settings.';
+                statusDiv.className = 'error';
+                return;
+            }
+      }
+
+      statusDiv.textContent = 'Updating...';
+      button.disabled = true;
+      overlay.classList.add('visible');
+
+      google.script.run
+        .withSuccessHandler(onSuccess)
+        .withFailureHandler(onFailure)
+        .updateShiftAssignment(formData);
+    }
+
+    function onSuccess(message) {
+      const statusDiv = document.getElementById('status');
+      const button = document.getElementById('submitButton');
+      const overlay = document.getElementById('loadingOverlay');
+      statusDiv.textContent = message || 'Shift updated successfully!';
+      statusDiv.className = 'success'; 
+      button.disabled = false;
+      overlay.classList.remove('visible');
+    }
+
+    function onFailure(error) {
+      const statusDiv = document.getElementById('status');
+      const button = document.getElementById('submitButton');
+      const overlay = document.getElementById('loadingOverlay');
+      statusDiv.textContent = 'Error: ' + error.message;
+      statusDiv.className = 'error';
+      button.disabled = false;
+      overlay.classList.remove('visible');
+    }
+
+    document.addEventListener('DOMContentLoaded', function() {
+        populateDayDropdown();
+        // Automatically select the first day if available and trigger UI update
+        const daySelect = document.getElementById('day');
+        if (daySelect.options.length > 0) {
+            daySelect.value = daySelect.options[0].value; // Select the first day
+        }
+        updateUI(); // This will populate time slots for the initially selected day
+    });
+  </script>
+</body>
+</html>
